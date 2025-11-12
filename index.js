@@ -1,7 +1,10 @@
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const admin = require("firebase-admin");
+require('dotenv').config()
 
+const serviceAccount = require("./serviceKey.json");
 const app = express();
 const port = 3000;
 
@@ -9,186 +12,269 @@ const port = 3000;
 app.use(cors());
 app.use(express.json());
 
+
+
+
+admin.initializeApp({
+   credential: admin.credential.cert(serviceAccount)
+});
+
+
 // MongoDB URI
 const uri =
-   "mongodb+srv://finance-management:63qWYOv4Y3pFuvLF@ggbd.znymale.mongodb.net/?appName=ggbd";
-
-// Create a MongoClient instance
+   `mongodb+srv://${process.env.DB_USERNAME}:${process.env.DB_PASSWORD}.znymale.mongodb.net/?appName=ggbd`;
 const client = new MongoClient(uri, {
-   serverApi: {
-      version: ServerApiVersion.v1,
-      strict: true,
-      deprecationErrors: true,
-   },
+   serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true },
 });
+
+
+// middlware
+const middlware = async (req, res, next) => {
+   const authorization = (req.headers.authorization)
+   if (!authorization) {
+      res.status(401).send({
+         message: 'unauthorized access. Token not found '
+      })
+   }
+   const token = authorization.split(' ')[1]
+
+   try {
+      const decode = await admin.auth().verifyIdToken(token);
+      console.log(decode)
+      next()
+   }
+   catch (error) {
+      res.status(401).send({ message: 'unauthorized access.' })
+   }
+
+}
+
+
+let transactionsCollection;
 
 async function run() {
    try {
       await client.connect();
       const db = client.db("finance-management");
-      const allFinance = db.collection("personal-finance");
+      transactionsCollection = db.collection("personal-finance");
 
       console.log("Connected to MongoDB successfully!");
 
-      // ------------------------------
-      // GET all transactions (for admin/test)
-      // ------------------------------
-      app.get("/alluser", async (req, res) => {
+      // Root route
+      app.get("/",middlware, (req, res) => res.send(" Finance API is running!"));
+
+      //  GET all users' transactions (for testing/admin)
+      app.get("/alluser",middlware, async (req, res) => {
          try {
-            const result = await allFinance.find().toArray();
+            const result = await transactionsCollection.find().toArray();
             res.send(result);
          } catch (error) {
-            console.error("Error fetching transactions:", error);
+            console.error(error);
             res.status(500).send({ message: "Error fetching transactions" });
          }
       });
 
-      // ------------------------------
-      // POST: Add new transaction
-      // ------------------------------
+      // POST: Add a new transaction
       app.post("/transactions", async (req, res) => {
          try {
-            const transaction = req.body;
+            const { type, category, amount, description, date, userEmail, userName } = req.body;
 
-            // Basic validation
-            if (
-               !transaction.type ||
-               !transaction.category ||
-               !transaction.amount ||
-               !transaction.date ||
-               !transaction.userEmail
-            ) {
-               return res
-                  .status(400)
-                  .send({ message: "Missing required transaction fields" });
+            if (!type || !category || !amount || !date || !userEmail) {
+               return res.status(400).send({ message: " Missing required fields" });
             }
 
-            const result = await allFinance.insertOne(transaction);
+            const numericAmount = parseFloat(amount);
+            if (isNaN(numericAmount)) {
+               return res.status(400).send({ message: "Amount must be a number" });
+            }
+
+            const newTransaction = {
+               type,
+               category,
+               amount: numericAmount,
+               description: description || "",
+               date,
+               userEmail: userEmail.trim(),
+               userName: userName?.trim() || "",
+            };
+
+            const result = await transactionsCollection.insertOne(newTransaction);
             res.send(result);
          } catch (error) {
-            console.error("Error inserting transaction:", error);
+            console.error(error);
             res.status(500).send({ message: "Failed to add transaction" });
          }
       });
 
-      // ------------------------------
-      // GET: Get transactions for a user
-      // ------------------------------
+      //  GET: User transactions (List)
       app.get("/transactions", async (req, res) => {
          try {
             const email = req.query.email;
-            if (!email) {
-               return res.status(401).send({ message: "Email query is required" });
-            }
-            const result = await allFinance
-               .find({ userEmail: email })
-               .sort({ date: -1 })
-               .toArray();
+            if (!email) return res.status(400).send({ message: "Email is required" });
+
+            const result = await transactionsCollection.find({ userEmail: email }).sort({ date: -1 }).toArray();
             res.send(result);
          } catch (error) {
-            console.error("Error fetching user transactions:", error);
+            console.error(error);
             res.status(500).send({ message: "Error fetching user transactions" });
          }
       });
 
-      // ------------------------------
-      // GET: Single transaction by ID
-      // ------------------------------
-      app.get("/transactions/:id", async (req, res) => {
+
+      //   GET: Total Income by User Email
+      app.get("/transactions/total-income", async (req, res) => {
+         try {
+            const userEmail = req.query.userEmail;
+            if (!userEmail) return res.status(400).json({ message: "User email is required" });
+
+            const result = await transactionsCollection
+               .aggregate([
+                  { $match: { userEmail: userEmail, type: "Income" } },
+                  { $group: { _id: null, total: { $sum: "$amount" } } },
+               ])
+               .toArray();
+
+            const total = result.length > 0 ? result[0].total : 0;
+            res.json({ total });
+         } catch (error) {
+            console.error("Error calculating total income:", error);
+            res.status(500).json({ message: "Internal server error" });
+         }
+      });
+
+
+      // GET: Total Expense by User Email
+
+      app.get("/transactions/total-expense", async (req, res) => {
+         try {
+            const userEmail = req.query.userEmail;
+            if (!userEmail) return res.status(400).json({ message: "User email is required" });
+
+            const result = await transactionsCollection
+               .aggregate([
+                  { $match: { userEmail: userEmail, type: "Expense" } },
+                  { $group: { _id: null, total: { $sum: "$amount" } } },
+               ])
+               .toArray();
+
+            const total = result.length > 0 ? result[0].total : 0;
+            res.json({ total });
+         } catch (error) {
+            console.error("Error calculating total expense:", error);
+            res.status(500).json({ message: "Internal server error" });
+         }
+      });
+
+      //  /category-total
+      app.get("/transactions/category-total", async (req, res) => {
+         try {
+            const { category, userEmail } = req.query;
+
+            if (!category || !userEmail) {
+               return res.status(400).json({ message: "Category and userEmail are required" });
+            }
+
+            const result = await transactionsCollection
+               .aggregate([
+
+                  { $match: { category: category, userEmail: userEmail } },
+                  { $group: { _id: null, total: { $sum: "$amount" } } },
+               ])
+               .toArray();
+
+            const total = result.length > 0 ? result[0].total : 0;
+            res.json({ total });
+         } catch (error) {
+            console.error("Error calculating category total:", error);
+            res.status(500).json({ message: "Internal server error" });
+         }
+      });
+
+      //  GET: Single transaction by ID --> View 
+
+      app.get("/transactions/:id", middlware, async (req, res) => {
          try {
             const id = req.params.id;
-            const result = await allFinance.findOne({ _id: new ObjectId(id) });
-            if (!result) {
-               return res.status(404).send({ message: "Transaction not found" });
-            }
-            res.send(result);
+            if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid transaction ID" });
+
+            const transaction = await transactionsCollection.findOne({ _id: new ObjectId(id) });
+            if (!transaction) return res.status(404).send({ message: "Transaction not found" });
+
+            res.send(transaction);
          } catch (error) {
-            console.error("Error fetching transaction:", error);
+            console.error(error);
             res.status(500).send({ message: "Error fetching transaction" });
          }
       });
 
+      //  GET: Reports for charts (data fetching)
+      app.get("/reports", async (req, res) => {
+         try {
+            const email = req.query.email;
+            if (!email) return res.status(400).send({ message: "Email is required" });
 
-      // PUT: Update transaction
+            const result = await transactionsCollection.find({ userEmail: email }).sort({ date: -1 }).toArray();
+            res.send(result);
+         } catch (error) {
+            console.error(error);
+            res.status(500).send({ message: "Error fetching reports" });
+         }
+      });
 
-      app.put("/transactions/:id", async (req, res) => {
+      //  PUT: Update transaction --> update 
+      app.put("/transactions/:id", (req, res, next) => {
+         console.log('i am from middlware....')
+         next()
+
+      }, async (req, res) => {
          try {
             const id = req.params.id;
-            const updatedData = req.body;
+            if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid transaction ID" });
 
-            // Only allow editable fields
-            const { type, category, amount, description, date, userEmail } =
-               updatedData;
+            const { type, category, amount, description, date, userEmail } = req.body;
 
-            // Fetch existing transaction
-            const transaction = await allFinance.findOne({ _id: new ObjectId(id) });
-            if (!transaction) {
-               return res.status(404).send({ message: "Transaction not found" });
-            }
+            const transaction = await transactionsCollection.findOne({ _id: new ObjectId(id) });
+            if (!transaction) return res.status(404).send({ message: "Transaction not found" });
+            if (transaction.userEmail !== userEmail) return res.status(403).send({ message: "Not authorized" });
 
-            // Authorization: Only owner can update
-            if (transaction.userEmail !== userEmail) {
-               return res.status(403).send({ message: "Not authorized" });
-            }
-
-            const updateDoc = {
-               $set: { type, category, amount, description, date },
-            };
-
-            const result = await allFinance.updateOne(
+            const result = await transactionsCollection.updateOne(
                { _id: new ObjectId(id) },
-               updateDoc
+               { $set: { type, category, amount: parseFloat(amount), description, date } }
             );
 
             res.send(result);
          } catch (error) {
-            console.error("Error updating transaction:", error);
+            console.error(error);
             res.status(500).send({ message: "Failed to update transaction" });
          }
       });
 
-      // DELETE: Delete transaction
+      // 9 DELETE: Delete transaction
       app.delete("/transactions/:id", async (req, res) => {
          try {
             const id = req.params.id;
-            const userEmail = req.query.userEmail; // get from query
+            const { userEmail } = req.query;
+            if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid transaction ID" });
+            if (!userEmail) return res.status(400).send({ message: "User email required" });
 
-            if (!userEmail) return res.status(401).send({ message: "User email required" });
-
-            const transaction = await allFinance.findOne({ _id: new ObjectId(id) });
+            const transaction = await transactionsCollection.findOne({ _id: new ObjectId(id) });
             if (!transaction) return res.status(404).send({ message: "Transaction not found" });
+            if (transaction.userEmail !== userEmail) return res.status(403).send({ message: "Not authorized" });
 
-            if (transaction.userEmail !== userEmail)
-               return res.status(403).send({ message: "Not authorized" });
-
-            const result = await allFinance.deleteOne({ _id: new ObjectId(id) });
+            const result = await transactionsCollection.deleteOne({ _id: new ObjectId(id) });
             res.send(result);
          } catch (error) {
-            console.error("Error deleting transaction:", error);
+            console.error(error);
             res.status(500).send({ message: "Failed to delete transaction" });
          }
       });
 
-      // Ping MongoDB
-      await client.db("admin").command({ ping: 1 });
-      console.log(" Pinged MongoDB successfully!");
+      console.log(" Backend routes ready!");
    } catch (err) {
-      console.error("MongoDB connection failed:", err);
+      console.error(" MongoDB connection failed:", err);
    }
 }
 
 run().catch(console.dir);
 
-// ------------------------------
-// Root route
-// ------------------------------
-app.get("/", (req, res) => {
-   res.send("Your Finance API is running smoothly!");
-});
-
-// ------------------------------
-// Start Server
-// ------------------------------
-app.listen(port, () => {
-   console.log(`Server running at http://localhost:${port}`);
-});
+app.listen(port, () => console.log(` Server running at http://localhost:${port}`));
