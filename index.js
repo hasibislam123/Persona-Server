@@ -1,12 +1,13 @@
+require('dotenv').config()
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const admin = require("firebase-admin");
-require('dotenv').config()
+
 
 const serviceAccount = require("./serviceKey.json");
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 
 // Middleware  
 app.use(cors());
@@ -51,17 +52,17 @@ let transactionsCollection;
 
 async function run() {
    try {
-      await client.connect();
+      // await client.connect();
       const db = client.db("finance-management");
-      transactionsCollection = db.collection("personal-finance");
+      const transactionsCollection = db.collection("personal-finance");
 
       console.log("Connected to MongoDB successfully!");
 
       // Root route
-      app.get("/",middlware, (req, res) => res.send(" Finance API is running!"));
+      app.get("/",  (req, res) => res.send(" Finance API is running!"));
 
       //  GET all users' transactions (for testing/admin)
-      app.get("/alluser",middlware, async (req, res) => {
+      app.get("/alluser",  async (req, res) => {
          try {
             const result = await transactionsCollection.find().toArray();
             res.send(result);
@@ -189,7 +190,7 @@ async function run() {
 
       //  GET: Single transaction by ID --> View 
 
-      app.get("/transactions/:id", middlware, async (req, res) => {
+      app.get("/transactions/:id",  async (req, res) => {
          try {
             const id = req.params.id;
             if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid transaction ID" });
