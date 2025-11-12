@@ -8,12 +8,9 @@ const serviceAccount = require("./serviceKey.json");
 const app = express();
 const port = 3000;
 
-// Middleware
+// Middleware  
 app.use(cors());
 app.use(express.json());
-
-
-
 
 admin.initializeApp({
    credential: admin.credential.cert(serviceAccount)
